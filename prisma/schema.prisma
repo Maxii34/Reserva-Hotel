@@ -11,3 +11,169 @@ generator client {
 datasource db {
   provider = "postgresql"
 }
+
+// ───────────── Enums ─────────────
+
+enum ReservationStatus {
+  PENDING
+  CONFIRMED
+  CHECKED_IN
+  CHECKED_OUT
+  CANCELLED
+  NO_SHOW
+}
+
+enum PaymentStatus {
+  PENDING
+  PAID
+  FAILED
+  REFUNDED
+}
+
+enum PaymentMethod {
+  CARD
+  CASH
+  TRANSFER
+}
+
+// ───────────── Modelos ─────────────
+
+model Hotel {
+  id        BigInt     @id @default(autoincrement())
+  name      String
+  address   String?
+  timezone  String     @default("America/Argentina/Tucuman")
+  currency  String     @default("ARS") @db.Char(3)
+  roomTypes RoomType[]
+}
+
+// Categoría de habitación: lo que el cliente elige al reservar
+model RoomType {
+  id          BigInt    @id @default(autoincrement())
+  hotelId     BigInt
+  name        String
+  description String?
+  maxAdults   Int       @db.SmallInt
+  maxChildren Int       @default(0) @db.SmallInt
+  basePrice   Decimal   @db.Decimal(12, 2)
+  amenities   Json      @default("[]")
+
+  hotel            Hotel             @relation(fields: [hotelId], references: [id])
+  rooms            Room[]
+  ratePlans        RatePlan[]
+  reservationRooms ReservationRoom[]
+
+  @@unique([hotelId, name])
+}
+
+// Habitación física
+model Room {
+  id         BigInt  @id @default(autoincrement())
+  roomTypeId BigInt
+  roomNumber String
+  floor      Int?    @db.SmallInt
+  isActive   Boolean @default(true) // false = fuera de servicio
+
+  roomType         RoomType          @relation(fields: [roomTypeId], references: [id])
+  reservationRooms ReservationRoom[]
+  blocks           RoomBlock[]
+
+  @@unique([roomTypeId, roomNumber])
+}
+
+model Guest {
+  id          BigInt   @id @default(autoincrement())
+  firstName   String
+  lastName    String
+  email       String?  @unique // guardar siempre en minúsculas
+  phone       String?
+  documentId  String?
+  createdAt   DateTime @default(now())
+
+  reservations Reservation[]
+}
+
+// Tarifas por temporada: rango [validFrom, validTo)
+model RatePlan {
+  id            BigInt   @id @default(autoincrement())
+  roomTypeId    BigInt
+  name          String
+  validFrom     DateTime @db.Date
+  validTo       DateTime @db.Date
+  pricePerNight Decimal  @db.Decimal(12, 2)
+
+  roomType RoomType @relation(fields: [roomTypeId], references: [id])
+
+  @@index([roomTypeId, validFrom, validTo])
+}
+
+// Reserva (cabecera)
+model Reservation {
+  id          BigInt            @id @default(autoincrement())
+  code        String            @unique // código legible para el cliente
+  guestId     BigInt
+  status      ReservationStatus @default(PENDING)
+  source      String            @default("web") // web, mostrador, booking, etc.
+  notes       String?
+  totalAmount Decimal           @default(0) @db.Decimal(12, 2)
+  expiresAt   DateTime? // para reservas PENDING sin pago
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+
+  guest    Guest             @relation(fields: [guestId], references: [id])
+  rooms    ReservationRoom[]
+  payments Payment[]
+
+  @@index([guestId])
+  @@index([status, expiresAt])
+}
+
+// Estadía por habitación: rango [checkIn, checkOut)
+model ReservationRoom {
+  id            BigInt   @id @default(autoincrement())
+  reservationId BigInt
+  roomTypeId    BigInt
+  roomId        BigInt? // null hasta asignar habitación
+  checkIn       DateTime @db.Date
+  checkOut      DateTime @db.Date
+  adults        Int      @db.SmallInt
+  children      Int      @default(0) @db.SmallInt
+  pricePerNight Decimal  @db.Decimal(12, 2) // precio congelado al reservar
+  isActive      Boolean  @default(true) // false si se cancela
+
+  reservation Reservation @relation(fields: [reservationId], references: [id], onDelete: Cascade)
+  roomType    RoomType    @relation(fields: [roomTypeId], references: [id])
+  room        Room?       @relation(fields: [roomId], references: [id])
+
+  @@index([reservationId])
+  @@index([roomId, checkIn, checkOut])
+  @@index([roomTypeId, checkIn, checkOut])
+}
+
+model Payment {
+  id            BigInt        @id @default(autoincrement())
+  reservationId BigInt
+  amount        Decimal       @db.Decimal(12, 2)
+  method        PaymentMethod
+  status        PaymentStatus @default(PENDING)
+  providerRef   String? // id en Stripe / MercadoPago
+  paidAt        DateTime?
+  createdAt     DateTime      @default(now())
+
+  reservation Reservation @relation(fields: [reservationId], references: [id])
+
+  @@index([reservationId])
+}
+
+// Bloqueos por mantenimiento: rango [startDate, endDate)
+model RoomBlock {
+  id        BigInt   @id @default(autoincrement())
+  roomId    BigInt
+  startDate DateTime @db.Date
+  endDate   DateTime @db.Date
+  reason    String?
+
+  room Room @relation(fields: [roomId], references: [id])
+
+  @@index([roomId, startDate, endDate])
+}
